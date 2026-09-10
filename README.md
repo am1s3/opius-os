@@ -1,6 +1,3 @@
-# `README.md` — полный
-
-```markdown
 # Opius OS
 
 Terminal-first embedded workspace for microcontrollers.
