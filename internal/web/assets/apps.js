@@ -247,6 +247,7 @@ class DeviceStudioApp {
         this.refreshInterval = null;
         this.serialWS = null;
         this.monitorActive = false;
+        this.codeEditor = null;
     }
 
     render() {
@@ -288,7 +289,7 @@ class DeviceStudioApp {
         const list = this.container.querySelector('#ds-device-list');
         if (this.devices.length === 0) {
             list.innerHTML = '<div class="empty" style="padding: 20px;">No devices</div>';
-            return;
+            return
         }
 
         list.innerHTML = this.devices.map(d => `
@@ -346,6 +347,7 @@ class DeviceStudioApp {
             <div class="device-actions">
                 <button id="ds-flash-btn">${ICONS.zap}<span>Flash Package</span></button>
                 <button id="ds-flash-custom-btn" class="secondary">${ICONS.zap}<span>Flash Custom</span></button>
+                <button id="ds-script-btn" class="secondary">${ICONS.terminal}<span>Arduino Sketch</span></button>
                 <button id="ds-erase-btn" class="secondary">${ICONS.trash}<span>Erase</span></button>
                 <button id="ds-reset-btn" class="secondary">${ICONS.rotateCw}<span>Reset</span></button>
                 <button id="ds-monitor-btn" class="secondary">${ICONS.monitor}<span>Monitor</span></button>
@@ -403,6 +405,33 @@ class DeviceStudioApp {
                 </div>
             </div>
 
+            <div id="ds-script-section" style="display: none;">
+                <div class="flash-form">
+                    <h3>Arduino Sketch Editor</h3>
+                    <p style="color: #9ca3af; font-size: 13px; margin-bottom: 16px;">
+                        Write or paste Arduino-style C++ code and flash it to your device.
+                    </p>
+                    <div class="form-row">
+                        <label>Board</label>
+                        <select id="ds-script-board">
+                            <option value="esp32:esp32:esp32">ESP32</option>
+                            <option value="esp32:esp32:esp32s3">ESP32-S3</option>
+                            <option value="esp32:esp32:esp32c3">ESP32-C3</option>
+                            <option value="esp8266:esp8266:generic">ESP8266</option>
+                            <option value="arduino:avr:uno">Arduino Uno</option>
+                            <option value="rp2040:rp2040:rpipico">Raspberry Pi Pico</option>
+                        </select>
+                    </div>
+                    <div id="ds-script-editor" style="height: 300px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); margin-bottom: 16px;"></div>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="ds-script-compile">Compile Only</button>
+                        <button id="ds-script-flash">Compile & Flash</button>
+                        <button id="ds-script-cancel" class="secondary">Cancel</button>
+                    </div>
+                    <div id="ds-script-result"></div>
+                </div>
+            </div>
+
             <div id="ds-monitor-section" style="display: none;">
                 <h3>Serial Monitor</h3>
                 <div class="monitor-toolbar" style="margin-bottom: 12px; display: flex; gap: 8px;">
@@ -425,6 +454,7 @@ class DeviceStudioApp {
         main.querySelector('#ds-flash-btn').onclick = () => {
             main.querySelector('#ds-flash-section').style.display = 'block';
             main.querySelector('#ds-flash-custom-section').style.display = 'none';
+            main.querySelector('#ds-script-section').style.display = 'none';
             main.querySelector('#ds-monitor-section').style.display = 'none';
             this.stopMonitor();
         };
@@ -432,12 +462,22 @@ class DeviceStudioApp {
         main.querySelector('#ds-flash-custom-btn').onclick = () => {
             main.querySelector('#ds-flash-custom-section').style.display = 'block';
             main.querySelector('#ds-flash-section').style.display = 'none';
+            main.querySelector('#ds-script-section').style.display = 'none';
             main.querySelector('#ds-monitor-section').style.display = 'none';
             this.stopMonitor();
             if (this.container.querySelectorAll('#ds-custom-bins .form-row').length === 0) {
                 this.addCustomBinRow();
             }
         };
+
+        main.querySelector('#ds-script-btn').addEventListener('click', () => {
+            main.querySelector('#ds-script-section').style.display = 'block';
+            main.querySelector('#ds-flash-section').style.display = 'none';
+            main.querySelector('#ds-flash-custom-section').style.display = 'none';
+            main.querySelector('#ds-monitor-section').style.display = 'none';
+            this.stopMonitor();
+            this.initCodeEditor();
+        });
 
         main.querySelector('#ds-erase-btn').onclick = () => {
             if (confirm('Erase device flash? This cannot be undone.')) {
@@ -451,6 +491,7 @@ class DeviceStudioApp {
             main.querySelector('#ds-monitor-section').style.display = 'block';
             main.querySelector('#ds-flash-section').style.display = 'none';
             main.querySelector('#ds-flash-custom-section').style.display = 'none';
+            main.querySelector('#ds-script-section').style.display = 'none';
             this.startMonitor();
         };
 
@@ -470,6 +511,12 @@ class DeviceStudioApp {
             main.querySelector('#ds-flash-custom-section').style.display = 'none';
         };
 
+        main.querySelector('#ds-script-compile')?.addEventListener('click', () => this.compileScript());
+        main.querySelector('#ds-script-flash')?.addEventListener('click', () => this.flashScript());
+        main.querySelector('#ds-script-cancel')?.addEventListener('click', () => {
+            main.querySelector('#ds-script-section').style.display = 'none';
+        });
+
         main.querySelector('#ds-monitor-close').onclick = () => {
             main.querySelector('#ds-monitor-section').style.display = 'none';
             this.stopMonitor();
@@ -485,16 +532,116 @@ class DeviceStudioApp {
         };
     }
 
-    async loadPackages() {
+    initCodeEditor() {
+        const editorDiv = this.container.querySelector('#ds-script-editor');
+        if (!editorDiv || this.codeEditor) return;
+
+        const textarea = document.createElement('textarea');
+        textarea.style.cssText = 'width: 100%; height: 100%; background: #1a1d23; color: #e5e7eb; border: none; padding: 12px; font-family: "SF Mono", monospace; font-size: 13px; resize: none; outline: none;';
+        textarea.value = `// Arduino Sketch
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(1000);
+  Serial.println("Hello from Opius OS!");
+}`;
+        editorDiv.appendChild(textarea);
+        this.codeEditor = textarea;
+    }
+
+    async compileScript() {
+        const code = this.codeEditor.value;
+        const board = this.container.querySelector('#ds-script-board').value;
+        const result = this.container.querySelector('#ds-script-result');
+
+        result.className = 'flash-result info';
+        result.textContent = 'Compiling...';
+
         try {
-            const res = await fetch('/api/packages');
+            const res = await fetch('/api/script/compile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, board }),
+            });
+
             const data = await res.json();
-            const pkgs = data.data || [];
-            const select = this.container.querySelector('#ds-pkg-select');
-            select.innerHTML = pkgs.map(p => `<option value="${p.name}">${p.name} v${p.version}</option>`).join('');
+
+            if (data.success) {
+                result.className = 'flash-result success';
+                result.innerHTML = `
+                    <div>${data.data.message}</div>
+                    <div style="margin-top: 8px; font-size: 12px; color: #9ca3af;">
+                        Binary: ${data.data.path}<br>
+                        Size: ${this.formatBytes(data.data.size)}
+                    </div>
+                `;
+                this.notify('Compilation successful', 'success');
+            } else {
+                result.className = 'flash-result error';
+                result.innerHTML = `
+                    <div>${data.error}</div>
+                    ${data.data?.output ? `<pre style="margin-top: 8px; font-size: 11px; overflow: auto; max-height: 150px;">${this.escapeHtml(data.data.output)}</pre>` : ''}
+                `;
+                this.notify('Compilation failed', 'error');
+            }
         } catch (e) {
-            console.error('Failed to load packages:', e);
+            result.className = 'flash-result error';
+            result.textContent = 'Error: ' + e.message;
+            this.notify('Compilation failed', 'error');
         }
+    }
+
+    async flashScript() {
+        const code = this.codeEditor.value;
+        const board = this.container.querySelector('#ds-script-board').value;
+        const result = this.container.querySelector('#ds-script-result');
+
+        result.className = 'flash-result info';
+        result.textContent = 'Compiling and flashing...';
+
+        try {
+            const res = await fetch('/api/script/flash', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code,
+                    board,
+                    port: this.selectedDevice.port,
+                    chip: this.selectedDevice.chip,
+                }),
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                result.className = 'flash-result success';
+                result.textContent = data.data.message;
+                this.notify('Sketch flashed successfully', 'success');
+            } else {
+                result.className = 'flash-result error';
+                result.innerHTML = `
+                    <div>${data.error}</div>
+                    ${data.data?.output ? `<pre style="margin-top: 8px; font-size: 11px; overflow: auto; max-height: 150px;">${this.escapeHtml(data.data.output)}</pre>` : ''}
+                `;
+                this.notify('Flash failed', 'error');
+            }
+        } catch (e) {
+            result.className = 'flash-result error';
+            result.textContent = 'Error: ' + e.message;
+            this.notify('Flash failed', 'error');
+        }
+    }
+
+    formatBytes(bytes) {
+        if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+        if (bytes >= 1024) return (bytes / 1024).toFixed(2) + ' KB';
+        return bytes + ' B';
     }
 
     async flashDevice() {
@@ -503,7 +650,14 @@ class DeviceStudioApp {
         const result = this.container.querySelector('#ds-flash-result');
 
         result.className = 'flash-result info';
-        result.textContent = 'Flashing...';
+        result.innerHTML = '<div>Flashing...</div><div id="flash-progress" style="margin-top: 8px; height: 20px; background: #1a1d23; border-radius: 4px; overflow: hidden;"><div id="flash-progress-bar" style="height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s;"></div></div>';
+
+        const progressSource = new EventSource(`/api/flash/progress?port=${encodeURIComponent(this.selectedDevice.port)}`);
+        progressSource.addEventListener('progress', (e) => {
+            const pct = parseInt(e.data);
+            const bar = this.container.querySelector('#flash-progress-bar');
+            if (bar) bar.style.width = pct + '%';
+        });
 
         try {
             const res = await fetch('/api/flash', {
@@ -515,6 +669,8 @@ class DeviceStudioApp {
                     erase: erase,
                 }),
             });
+
+            progressSource.close();
 
             const data = await res.json();
 
@@ -528,242 +684,11 @@ class DeviceStudioApp {
                 this.notify('Flash failed', 'error');
             }
         } catch (e) {
+            progressSource.close();
             result.className = 'flash-result error';
             result.textContent = 'Error: ' + e.message;
             this.notify('Flash failed', 'error');
         }
-    }
-
-    addCustomBinRow() {
-        const container = this.container.querySelector('#ds-custom-bins');
-        const row = document.createElement('div');
-        row.className = 'form-row';
-        row.innerHTML = `
-            <label>Binary</label>
-            <input type="file" accept=".bin" class="custom-bin-file">
-            <input type="text" placeholder="0x10000" class="custom-bin-address" style="max-width: 120px;">
-            <button class="danger" onclick="this.parentElement.remove()">Remove</button>
-        `;
-        container.appendChild(row);
-    }
-
-    async flashCustom() {
-        const rows = this.container.querySelectorAll('#ds-custom-bins .form-row');
-        const erase = this.container.querySelector('#ds-custom-erase-check').checked;
-        const chip = this.container.querySelector('#ds-custom-chip').value;
-        const result = this.container.querySelector('#ds-custom-flash-result');
-
-        const binaries = [];
-        for (const row of rows) {
-            const fileInput = row.querySelector('.custom-bin-file');
-            const addressInput = row.querySelector('.custom-bin-address');
-
-            if (!fileInput.files[0] || !addressInput.value) {
-                result.className = 'flash-result error';
-                result.textContent = 'All binaries must have file and address';
-                return;
-            }
-
-            const file = fileInput.files[0];
-            const address = addressInput.value.trim();
-
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('address', address);
-
-            const uploadRes = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData,
-            });
-
-            const uploadData = await uploadRes.json();
-            if (!uploadData.success) {
-                result.className = 'flash-result error';
-                result.textContent = 'Upload failed: ' + uploadData.error;
-                return;
-            }
-
-            binaries.push({
-                path: uploadData.data.path,
-                address: address.startsWith('0x') ? address : '0x' + address,
-            });
-        }
-
-        if (binaries.length === 0) {
-            result.className = 'flash-result error';
-            result.textContent = 'Add at least one binary';
-            return;
-        }
-
-        result.className = 'flash-result info';
-        result.textContent = 'Flashing ' + chip + '...';
-
-        try {
-            const res = await fetch('/api/flash-custom', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    port: this.selectedDevice.port,
-                    chip: chip,
-                    binaries: binaries,
-                    erase: erase,
-                }),
-            });
-
-            const data = await res.json();
-
-            if (data.success) {
-                result.className = 'flash-result success';
-                result.textContent = data.data.message;
-                this.notify('Custom flash complete', 'success');
-            } else {
-                result.className = 'flash-result error';
-                result.textContent = 'Error: ' + data.error;
-                this.notify('Custom flash failed', 'error');
-            }
-        } catch (e) {
-            result.className = 'flash-result error';
-            result.textContent = 'Error: ' + e.message;
-            this.notify('Custom flash failed', 'error');
-        }
-    }
-
-    async eraseDevice() {
-        this.notify('Erasing device...', 'info');
-        try {
-            const res = await fetch('/api/erase', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port: this.selectedDevice.port }),
-            });
-            const data = await res.json();
-            if (data.success) {
-                this.notify('Device erased', 'success');
-            } else {
-                this.notify('Erase failed: ' + data.error, 'error');
-            }
-        } catch (e) {
-            this.notify('Erase failed: ' + e.message, 'error');
-        }
-    }
-
-    async resetDevice() {
-        try {
-            const res = await fetch('/api/reset', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port: this.selectedDevice.port }),
-            });
-            const data = await res.json();
-            if (data.success) {
-                this.notify('Reset signal sent', 'success');
-            } else {
-                this.notify('Reset failed: ' + data.error, 'error');
-            }
-        } catch (e) {
-            this.notify('Reset failed: ' + e.message, 'error');
-        }
-    }
-
-    startMonitor() {
-        this.stopMonitor();
-
-        const output = this.container.querySelector('#ds-monitor-output');
-        output.innerHTML = '';
-
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/serial?port=${encodeURIComponent(this.selectedDevice.port)}&baud=115200`;
-
-        this.appendMonitorLine('status', 'Connecting to ' + this.selectedDevice.port + '...');
-
-        this.serialWS = new WebSocket(wsUrl);
-        this.monitorActive = true;
-
-        this.serialWS.onopen = () => {
-            this.appendMonitorLine('status', 'Monitor connected');
-        };
-
-        this.serialWS.onmessage = (ev) => {
-            try {
-                const msg = JSON.parse(ev.data);
-                this.appendMonitorLine(msg.type, msg.content, msg.time);
-            } catch (e) {
-                this.appendMonitorLine('data', ev.data);
-            }
-        };
-
-        this.serialWS.onerror = () => {
-            this.appendMonitorLine('error', 'Connection error');
-        };
-
-        this.serialWS.onclose = () => {
-            this.monitorActive = false;
-            this.appendMonitorLine('status', 'Monitor disconnected');
-        };
-    }
-
-    stopMonitor() {
-        if (this.serialWS) {
-            try {
-                if (this.serialWS.readyState === WebSocket.OPEN) {
-                    this.serialWS.send(JSON.stringify({ action: 'close' }));
-                }
-            } catch (e) {}
-            this.serialWS.close();
-            this.serialWS = null;
-        }
-        this.monitorActive = false;
-    }
-
-    appendMonitorLine(type, content, time) {
-        const output = this.container.querySelector('#ds-monitor-output');
-        if (!output) return;
-
-        const timeStr = time || new Date().toLocaleTimeString('en-US', { hour12: false });
-        const line = document.createElement('div');
-        line.className = 'log-line';
-
-        let colorClass = '';
-        if (type === 'error') colorClass = ' style="color: #ef4444;"';
-        else if (type === 'status') colorClass = ' style="color: #3b82f6;"';
-
-        line.innerHTML = `<span class="log-time">${timeStr}</span><span${colorClass}>${this.escapeHtml(content)}</span>`;
-        output.appendChild(line);
-        output.scrollTop = output.scrollHeight;
-    }
-
-    sendCommand() {
-        if (!this.serialWS || !this.monitorActive) return;
-        const input = this.container.querySelector('#ds-monitor-input');
-        const cmd = input.value.trim();
-        if (!cmd) return;
-
-        this.serialWS.send(JSON.stringify({ action: 'send', content: cmd }));
-        this.appendMonitorLine('data', '> ' + cmd);
-        input.value = '';
-    }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
-    notify(message, type) {
-        if (window.showToast) {
-            window.showToast(message, type);
-        } else {
-            console.log(`[${type}] ${message}`);
-        }
-    }
-
-    destroy() {
-        if (this.refreshInterval) {
-            clearInterval(this.refreshInterval);
-        }
-        this.stopMonitor();
-        this.selectedDevice = null;
-        this.devices = [];
     }
 }
 

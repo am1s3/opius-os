@@ -5,57 +5,75 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/opius-os/opius/internal/pkg"
 	"github.com/opius-os/opius/internal/ui/components"
 	"github.com/opius-os/opius/internal/ui/style"
 )
 
 var pkgListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List installed packages",
+	Short: "List all available firmware packages",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		storePath, err := pkg.DefaultStorePath()
+		reg := newPkgRegistry()
+
+		packages, err := reg.List()
 		if err != nil {
-			return err
+			if err := reg.Sync(); err != nil {
+				return fmt.Errorf("failed to load registry: %w", err)
+			}
+			packages, err = reg.List()
+			if err != nil {
+				return err
+			}
 		}
-		store := pkg.NewStore(storePath)
 
-		installed, err := store.List()
-		if err != nil {
-			return err
-		}
+		components.PrintSection("Available Packages")
 
-		components.PrintSection("Installed Packages")
-
-		if len(installed) == 0 {
-			fmt.Println("  " + components.BadgeWarn() + " no packages installed")
-			fmt.Println(style.Dim.Render("  Install one with:"))
-			fmt.Println(style.Dim.Render("    opius pkg install <name>"))
+		if len(packages) == 0 {
+			fmt.Println("  " + components.BadgeWarn() + " No packages available")
+			fmt.Println(style.Dim.Render("  Run 'opius update' to update Opius and sync the registry"))
 			return nil
 		}
 
-		fmt.Printf("  %-20s %-12s %-20s %-30s\n",
+		fmt.Printf("  %-30s %-12s %s\n",
 			style.Header.Render("NAME"),
-			style.Header.Render("VERSION"),
-			style.Header.Render("INSTALLED"),
-			style.Header.Render("PATH"),
+			style.Header.Render("CHIPS"),
+			style.Header.Render("DESCRIPTION"),
 		)
 
-		for _, ip := range installed {
-			installedAt := ip.InstalledAt.Format("2006-01-02 15:04")
-			if ip.InstalledAt.IsZero() {
-				installedAt = "-"
+		for _, p := range packages {
+			chips := "-"
+			if len(p.Chips) > 0 {
+				chips = joinStrings(p.Chips)
 			}
-			fmt.Printf("  %-20s %-12s %-20s %-30s\n",
-				style.Value.Render(ip.Name),
-				style.Dim.Render(ip.Version),
-				style.Dim.Render(installedAt),
-				style.Dim.Render(ip.InstallDir),
+			desc := p.Description
+			if len(desc) > 40 {
+				desc = desc[:37] + "..."
+			}
+
+			fmt.Printf("  %-30s %-12s %s\n",
+				style.Value.Render(p.Name),
+				style.Dim.Render(chips),
+				desc,
 			)
 		}
 
 		fmt.Println()
-		fmt.Printf("  %d package(s) installed\n", len(installed))
+		fmt.Printf("  %d package(s) available\n", len(packages))
+		fmt.Println(style.Dim.Render("  Info:     opius pkg info <name>"))
+		fmt.Println(style.Dim.Render("  Download: opius pkg download <name>"))
+		fmt.Println(style.Dim.Render("  Flash:    opius pkg flash <name>"))
+
 		return nil
 	},
+}
+
+func joinStrings(items []string) string {
+	result := ""
+	for i, s := range items {
+		if i > 0 {
+			result += ", "
+		}
+		result += s
+	}
+	return result
 }

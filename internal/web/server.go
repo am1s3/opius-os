@@ -36,6 +36,7 @@ func (s *Server) setupRoutes() {
 	mux.HandleFunc("/api/packages", s.handlePackages)
 	mux.HandleFunc("/api/flash", s.handleFlash)
 	mux.HandleFunc("/api/flash-custom", s.handleFlashCustom)
+	mux.HandleFunc("/api/flash/progress", s.handleFlashProgress)
 	mux.HandleFunc("/api/install", s.handleInstall)
 	mux.HandleFunc("/api/erase", s.handleErase)
 	mux.HandleFunc("/api/reset", s.handleReset)
@@ -45,6 +46,8 @@ func (s *Server) setupRoutes() {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/system", s.handleSystem)
 	mux.HandleFunc("/api/fs/list", s.handleFSList)
+	mux.HandleFunc("/api/script/compile", s.handleScriptCompile)
+	mux.HandleFunc("/api/script/flash", s.handleScriptFlash)
 
 	mux.HandleFunc("/ws/terminal", s.handleTerminalWS)
 	mux.HandleFunc("/ws/serial", s.handleSerialMonitorWS)

@@ -1,118 +1,207 @@
 package pkg
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
+type PackageIndex struct {
+	Version     string         `json:"version"`
+	LastUpdated string         `json:"last_updated"`
+	Packages    []PackageEntry `json:"packages"`
+}
+
+type PackageEntry struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Category    string   `json:"category"`
+	Chips       []string `json:"chips"`
+	ManifestURL string   `json:"manifest_url"`
+}
+
+type PackageManifest struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Category    string          `json:"category"`
+	Chips       []string        `json:"chips"`
+	Boards      []string        `json:"boards"`
+	Homepage    string          `json:"homepage"`
+	License     string          `json:"license"`
+	Versions    []PackageVersion `json:"versions"`
+}
+
+type PackageVersion struct {
+	Version     string `json:"version"`
+	ReleaseDate string `json:"release_date"`
+	DownloadURL string `json:"download_url"`
+	SHA256      string `json:"sha256"`
+	Size        int64  `json:"size"`
+}
+
 type Registry struct {
-	LocalPath string
+	IndexURL string
+	CacheDir string
+	index    *PackageIndex
 }
 
-func NewRegistry(localPath string) *Registry {
-	return &Registry{LocalPath: localPath}
+func NewRegistry(indexURL, cacheDir string) *Registry {
+	return &Registry{
+		IndexURL: indexURL,
+		CacheDir: cacheDir,
+	}
 }
 
-func DefaultRegistryPath() (string, error) {
+func DefaultRegistryURL() string {
+	return "https://raw.githubusercontent.com/am1s3/opius-os-pkg/main/index.json"
+}
+
+func DefaultCacheDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".opius", "registry"), nil
+	return filepath.Join(home, ".opius", "cache"), nil
 }
 
-func (r *Registry) Ensure() error {
-	return os.MkdirAll(r.LocalPath, 0o755)
+func (r *Registry) Sync() error {
+	resp, err := http.Get(r.IndexURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch registry: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("registry returned HTTP %d", resp.StatusCode)
+	}
+
+	var index PackageIndex
+	if err := json.NewDecoder(resp.Body).Decode(&index); err != nil {
+		return fmt.Errorf("failed to parse registry: %w", err)
+	}
+
+	r.index = &index
+
+	if err := r.saveCache(&index); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not cache registry: %v\n", err)
+	}
+
+	return nil
 }
 
-func (r *Registry) List() ([]Manifest, error) {
-	if err := r.Ensure(); err != nil {
+func (r *Registry) Load() (*PackageIndex, error) {
+	if r.index != nil {
+		return r.index, nil
+	}
+
+	cached, err := r.loadCache()
+	if err == nil && cached != nil {
+		r.index = cached
+		return cached, nil
+	}
+
+	if err := r.Sync(); err != nil {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(r.LocalPath)
+	return r.index, nil
+}
+
+func (r *Registry) List() ([]PackageEntry, error) {
+	index, err := r.Load()
+	if err != nil {
+		return nil, err
+	}
+	return index.Packages, nil
+}
+
+func (r *Registry) Find(name string) (*PackageManifest, error) {
+	index, err := r.Load()
 	if err != nil {
 		return nil, err
 	}
 
-	manifests := make([]Manifest, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	var manifestURL string
+	for _, pkg := range index.Packages {
+		if strings.EqualFold(pkg.Name, name) {
+			manifestURL = pkg.ManifestURL
+			break
 		}
-		if !strings.HasSuffix(strings.ToLower(e.Name()), ".toml") {
-			continue
-		}
-
-		full := filepath.Join(r.LocalPath, e.Name())
-		var m Manifest
-		if _, err := toml.DecodeFile(full, &m); err != nil {
-			continue // skip broken manifests
-		}
-		if m.Name == "" {
-			continue
-		}
-		manifests = append(manifests, m)
 	}
 
-	return manifests, nil
+	if manifestURL == "" {
+		return nil, fmt.Errorf("package %q not found", name)
+	}
+
+	resp, err := http.Get(manifestURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch manifest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("manifest returned HTTP %d", resp.StatusCode)
+	}
+
+	var manifest PackageManifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	return &manifest, nil
 }
 
-func (r *Registry) Find(name string) (*Manifest, error) {
-	all, err := r.List()
+func (r *Registry) Search(query string) ([]PackageEntry, error) {
+	packages, err := r.List()
 	if err != nil {
 		return nil, err
 	}
 
-	for i := range all {
-		if strings.EqualFold(all[i].Name, name) {
-			return &all[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("package %q not found in registry %s", name, r.LocalPath)
-}
-
-func (r *Registry) Search(query string) ([]Manifest, error) {
-	all, err := r.List()
-	if err != nil {
-		return nil, err
+	if query == "" {
+		return packages, nil
 	}
 
 	query = strings.ToLower(query)
-	if query == "" {
-		return all, nil
-	}
-
-	result := make([]Manifest, 0, len(all))
-	for _, m := range all {
-		name := strings.ToLower(m.Name)
-		desc := strings.ToLower(m.Description)
+	var result []PackageEntry
+	for _, p := range packages {
+		name := strings.ToLower(p.Name)
+		desc := strings.ToLower(p.Description)
 		if strings.Contains(name, query) || strings.Contains(desc, query) {
-			result = append(result, m)
+			result = append(result, p)
 		}
 	}
 
 	return result, nil
 }
 
-func (r *Registry) Add(m *Manifest) error {
-	if err := r.Ensure(); err != nil {
+func (r *Registry) saveCache(index *PackageIndex) error {
+	if err := os.MkdirAll(r.CacheDir, 0755); err != nil {
 		return err
 	}
 
-	filename := filepath.Join(r.LocalPath, m.Name+"-"+m.Version+".toml")
-
-	f, err := os.Create(filename)
+	cachePath := filepath.Join(r.CacheDir, "registry.json")
+	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	enc := toml.NewEncoder(f)
-	return enc.Encode(m)
+	return os.WriteFile(cachePath, data, 0644)
+}
+
+func (r *Registry) loadCache() (*PackageIndex, error) {
+	cachePath := filepath.Join(r.CacheDir, "registry.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var index PackageIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, err
+	}
+
+	return &index, nil
 }

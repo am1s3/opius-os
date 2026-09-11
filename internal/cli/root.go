@@ -18,7 +18,7 @@ var rootCmd = &cobra.Command{
 	Long: `Opius OS is a terminal-first workspace for microcontroller flashing,
 firmware package management and embedded development workflows.
 
-Foundation build v0.9.0-alpha.
+Version 1.2.0-alpha
 
 Repository: https://github.com/am1s3/opius-os`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -47,4 +47,6 @@ func init() {
 	rootCmd.AddCommand(pkgCmd)
 	rootCmd.AddCommand(completionCmd)
 	rootCmd.AddCommand(webCmd)
+	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(updateCmd)
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -16,101 +17,59 @@ import (
 
 var (
 	pkgFlashPort    string
+	pkgFlashChip    string
+	pkgFlashVersion string
 	pkgFlashErase   bool
-	pkgFlashDryRun  bool
 	pkgFlashYes     bool
 )
 
 var pkgFlashCmd = &cobra.Command{
 	Use:   "flash <name>",
-	Short: "Install a package and flash it to a device",
-	Long: `Install a package from the registry and flash it to a connected device.
-
-This command combines 'pkg install' and 'device flash' into one step.
-It automatically finds the firmware file in the package manifest and
-flashes it to the detected or specified device.
-
-Examples:
-  opius pkg flash bruce
-  opius pkg flash bruce --port /dev/cu.usbserial-14110
-  opius pkg flash bruce --erase
-  opius pkg flash bruce --dry-run`,
-	Args: cobra.ExactArgs(1),
+	Short: "Download and flash a package to device",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
-		// Step 1: Find package in registry
-		regPath, err := pkg.DefaultRegistryPath()
-		if err != nil {
-			return err
-		}
-		registry := pkg.NewRegistry(regPath)
-
-		m, err := registry.Find(name)
-		if err != nil {
-			return err
+		reg := newPkgRegistry()
+		if err := reg.Sync(); err != nil {
+			return fmt.Errorf("failed to sync registry: %w", err)
 		}
 
-		// Step 2: Install package if not already installed
-		storePath, err := pkg.DefaultStorePath()
-		if err != nil {
-			return err
-		}
-		store := pkg.NewStore(storePath)
-
-		installDir := store.PackageDir(m.Name, m.Version)
-		installed, err := store.List()
+		m, err := reg.Find(name)
 		if err != nil {
 			return err
 		}
 
-		alreadyInstalled := false
-		for _, ip := range installed {
-			if ip.Name == m.Name && ip.Version == m.Version {
-				alreadyInstalled = true
-				break
+		if len(m.Versions) == 0 {
+			return fmt.Errorf("no versions available for %s", name)
+		}
+
+		// Select version
+		var version *pkg.PackageVersion
+		if pkgFlashVersion != "" {
+			for i := range m.Versions {
+				if m.Versions[i].Version == pkgFlashVersion {
+					version = &m.Versions[i]
+					break
+				}
 			}
-		}
-
-		if !alreadyInstalled {
-			components.PrintSection("Step 1: Install Package")
-			fmt.Printf("  %-12s %s\n", "Package", style.Value.Render(m.Name))
-			fmt.Printf("  %-12s %s\n", "Version", style.Value.Render(m.Version))
-			fmt.Printf("  %-12s %s\n", "Target", style.Dim.Render(installDir))
-
-			if err := store.Install(m, regPath); err != nil {
-				return fmt.Errorf("install failed: %w", err)
+			if version == nil {
+				return fmt.Errorf("version %s not found. Available: %s", pkgFlashVersion, listVersionNames(m.Versions))
 			}
-
-			fmt.Println("  " + components.BadgeOK() + " package installed")
-			fmt.Println()
 		} else {
-			fmt.Println(style.Dim.Render("  Package already installed, skipping install step"))
-			fmt.Println()
+			version = &m.Versions[0] // Latest
 		}
 
-		// Step 3: Find firmware file in manifest
-		var firmwareFile *pkg.File
-		for i := range m.Files {
-			if m.Files[i].Type == "firmware" {
-				firmwareFile = &m.Files[i]
-				break
-			}
-		}
-
-		if firmwareFile == nil {
-			return fmt.Errorf("no firmware file found in package manifest (looking for type='firmware')")
-		}
-
-		// Step 4: Determine chip from manifest
-		chip := ""
-		if len(m.Chips) > 0 {
+		// Determine chip
+		chip := pkgFlashChip
+		if chip == "" && len(m.Chips) > 0 {
 			chip = m.Chips[0]
-		} else {
-			chip = "esp32" // default fallback
+		}
+		if chip == "" {
+			chip = "esp32"
 		}
 
-		// Step 5: Detect or use specified port
+		// Determine port
 		port := pkgFlashPort
 		if port == "" {
 			devs, err := device.List()
@@ -121,7 +80,7 @@ Examples:
 				return fmt.Errorf("no devices connected")
 			}
 			if len(devs) > 1 {
-				fmt.Println("  " + components.BadgeWarn() + " multiple devices found:")
+				fmt.Println("  " + components.BadgeWarn() + " Multiple devices found:")
 				for _, d := range devs {
 					fmt.Printf("    %s · %s\n", style.Dim.Render(d.Port), style.Value.Render(d.Chip))
 				}
@@ -130,8 +89,56 @@ Examples:
 			port = devs[0].Port
 		}
 
-		// Step 6: Build flash plan
-		firmwarePath := filepath.Join(installDir, firmwareFile.Path)
+		// Download first
+		home, _ := os.UserHomeDir()
+		downloadDir := filepath.Join(home, ".opius", "downloads")
+		os.MkdirAll(downloadDir, 0755)
+
+		filename := filepath.Base(version.DownloadURL)
+		if filename == "" || filename == "/" {
+			filename = m.Name + "-" + version.Version + ".bin"
+		}
+		firmwarePath := filepath.Join(downloadDir, filename)
+
+		components.PrintSection("Flash Plan")
+		fmt.Printf("  %-12s %s\n", "Package", style.Value.Render(m.Name+"@"+version.Version))
+		fmt.Printf("  %-12s %s\n", "Chip", style.Value.Render(chip))
+		fmt.Printf("  %-12s %s\n", "Port", style.Value.Render(port))
+		fmt.Printf("  %-12s %s\n", "Firmware", style.Dim.Render(firmwarePath))
+		if pkgFlashErase {
+			fmt.Printf("  %-12s %s\n", "Erase", style.Warning.Render("YES"))
+		}
+		fmt.Println()
+
+		if !pkgFlashYes {
+			fmt.Println(style.Warning.Render("  This will write firmware to the device."))
+			if !components.PromptConfirm("  Proceed?", true) {
+				fmt.Println("  " + components.BadgeWarn() + " aborted")
+				return nil
+			}
+		}
+
+		// Download if not exists
+		if _, err := os.Stat(firmwarePath); os.IsNotExist(err) {
+			fmt.Println()
+			components.PrintSection("Downloading firmware")
+			if err := downloadWithProgress(version.DownloadURL, firmwarePath, version.Size); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
+
+			if version.SHA256 != "" {
+				fmt.Print("  Verifying SHA256... ")
+				if err := verifyFileSHA256(firmwarePath, version.SHA256); err != nil {
+					fmt.Println(components.BadgeErr())
+					return fmt.Errorf("checksum mismatch: %w", err)
+				}
+				fmt.Println(components.BadgeOK())
+			}
+		}
+
+		// Flash
+		fmt.Println()
+		components.PrintSection("Flashing")
 
 		target := flash.Target{
 			Chip:  chip,
@@ -140,8 +147,8 @@ Examples:
 			Erase: pkgFlashErase,
 		}
 
-		registry2 := flash.NewRegistry()
-		driver, err := registry2.Select(target)
+		flashReg := flash.NewRegistry()
+		driver, err := flashReg.Select(target)
 		if err != nil {
 			return err
 		}
@@ -150,40 +157,6 @@ Examples:
 		if err != nil {
 			return err
 		}
-
-		components.PrintSection("Step 2: Flash Plan")
-		fmt.Printf("  %-12s %s\n", "Package", style.Value.Render(m.Name+"@"+m.Version))
-		fmt.Printf("  %-12s %s\n", "Firmware", style.Dim.Render(firmwareFile.Path))
-		fmt.Printf("  %-12s %s\n", "Chip", style.Value.Render(chip))
-		fmt.Printf("  %-12s %s\n", "Port", style.Value.Render(port))
-		if pkgFlashErase {
-			fmt.Printf("  %-12s %s\n", "Erase", style.Warning.Render("YES"))
-		}
-		fmt.Printf("  %-12s %d\n", "Steps", len(plan.Steps))
-		fmt.Println()
-
-		if pkgFlashDryRun {
-			fmt.Println(style.Info.Render("  Dry run mode — no changes will be made"))
-			fmt.Println()
-			for i, s := range plan.Steps {
-				phaseColor := phaseStyle(s.Phase)
-				fmt.Printf("  %d. %s %s\n", i+1, phaseColor.Render(s.Phase), style.Value.Render(s.Name))
-				fmt.Printf("     %s\n", style.Dim.Render(s.Description))
-			}
-			return nil
-		}
-
-		if !pkgFlashYes {
-			fmt.Println(style.Warning.Render("  This will write firmware to the device."))
-			if !components.PromptConfirm("  Proceed?", true) {
-				fmt.Println("  " + components.BadgeWarn() + " aborted by user")
-				return nil
-			}
-		}
-
-		// Step 7: Execute flash
-		fmt.Println()
-		components.PrintSection("Step 3: Flashing")
 
 		evCh := make(chan flash.ProgressEvent)
 		errCh := make(chan error, 1)
@@ -195,7 +168,7 @@ Examples:
 		for ev := range evCh {
 			phaseColor := phaseStyle(ev.Phase)
 			fmt.Printf("  %s %s: %s\n",
-				phaseColor.Render("[" + ev.Phase + "]"),
+				phaseColor.Render("["+ev.Phase+"]"),
 				style.Value.Render(ev.Step),
 				style.Dim.Render(ev.Message),
 			)
@@ -208,18 +181,18 @@ Examples:
 		}
 
 		fmt.Println()
-		fmt.Println("  " + components.BadgeOK() + " package flashed successfully")
+		fmt.Println("  " + components.BadgeOK() + " Flash completed successfully!")
 		fmt.Println()
-		fmt.Println(style.Dim.Render("  Open serial monitor with:"))
-		fmt.Println(style.Dim.Render("    opius device monitor --port " + port))
+		fmt.Println(style.Dim.Render("  Monitor with: opius device monitor --port " + port))
 
 		return nil
 	},
 }
 
 func init() {
-	pkgFlashCmd.Flags().StringVarP(&pkgFlashPort, "port", "p", "", "Serial port (auto-detected if only one)")
-	pkgFlashCmd.Flags().BoolVarP(&pkgFlashErase, "erase", "e", false, "Full erase before write")
-	pkgFlashCmd.Flags().BoolVar(&pkgFlashDryRun, "dry-run", false, "Only show the plan, do not flash")
-	pkgFlashCmd.Flags().BoolVarP(&pkgFlashYes, "yes", "y", false, "Skip confirmation prompt")
+	pkgFlashCmd.Flags().StringVarP(&pkgFlashPort, "port", "p", "", "Serial port")
+	pkgFlashCmd.Flags().StringVarP(&pkgFlashChip, "chip", "c", "", "Target chip")
+	pkgFlashCmd.Flags().StringVarP(&pkgFlashVersion, "version", "v", "", "Specific version (default: latest)")
+	pkgFlashCmd.Flags().BoolVarP(&pkgFlashErase, "erase", "e", false, "Erase before flash")
+	pkgFlashCmd.Flags().BoolVarP(&pkgFlashYes, "yes", "y", false, "Skip confirmation")
 }

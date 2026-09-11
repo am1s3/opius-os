@@ -2,19 +2,26 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
+
+	"github.com/opius-os/opius/internal/pkg"
 )
 
 var pkgCmd = &cobra.Command{
-	Use:     "pkg",
-	Aliases: []string{"opiuspkg"},
-	Short:   "Opius package manager",
-	Long: `Opius package manager.
+	Use:   "pkg",
+	Short: "Opius package manager",
+	Long: `Opius package manager — simple firmware management.
 
-Manage firmware packages, tools and configurations through a local
-or remote registry. Packages are stored in ~/.opius/packages and
-verified with SHA-256 checksums.
+Commands:
+  list      Show all available firmware packages
+  info      Show detailed info about a package
+  download  Download a firmware .bin file
+  flash     Download and flash a package to device
 
-Default registry: https://github.com/am1s3/opius-os-pkg`,
+Examples:
+  opius pkg list
+  opius pkg info bruce
+  opius pkg download bruce
+  opius pkg flash bruce`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
 	},
@@ -22,12 +29,18 @@ Default registry: https://github.com/am1s3/opius-os-pkg`,
 
 func init() {
 	pkgCmd.AddCommand(pkgSearchCmd)
-	pkgCmd.AddCommand(pkgInfoCmd)
-	pkgCmd.AddCommand(pkgInstallCmd)
 	pkgCmd.AddCommand(pkgListCmd)
-	pkgCmd.AddCommand(pkgRemoveCmd)
-	pkgCmd.AddCommand(pkgInitCmd)
+	pkgCmd.AddCommand(pkgInfoCmd)
+	pkgCmd.AddCommand(pkgDownloadCmd)
+	pkgCmd.AddCommand(pkgInstallCmd)
 	pkgCmd.AddCommand(pkgFlashCmd)
-	pkgCmd.AddCommand(pkgSyncCmd)
-	pkgCmd.AddCommand(pkgUpdateCmd)
+	pkgCmd.AddCommand(pkgInitCmd)
+}
+
+func newPkgRegistry() *pkg.Registry {
+	cacheDir, err := pkg.DefaultCacheDir()
+	if err != nil {
+		cacheDir = ""
+	}
+	return pkg.NewRegistry(pkg.DefaultRegistryURL(), cacheDir)
 }

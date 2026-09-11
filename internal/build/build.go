@@ -1,7 +1,7 @@
 package build
 
 var (
-	Version   = "0.9.0"
-	Channel   = "dev"
+	Version   = "1.2.0"
+	Channel   = "alpha"
 	BuildDate = "unknown"
 )

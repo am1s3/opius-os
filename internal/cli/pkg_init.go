@@ -1,9 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -13,66 +14,73 @@ import (
 )
 
 var pkgInitCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Create a sample package manifest in the registry",
-	Long: `Create a sample package manifest in the local registry.
+	Use:   "init [name]",
+	Short: "Create a new package manifest template",
+	Long: `Create a template manifest.json for a new firmware package.
 
-This is useful for learning the package format. After running this
-command, edit the generated .toml file and add your firmware files
-to the registry directory.`,
+This generates a starter manifest file that you can edit and submit
+to the Opius package registry.
+
+Examples:
+  opius pkg init my-firmware
+  opius pkg init bruce-custom`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		regPath, err := pkg.DefaultRegistryPath()
-		if err != nil {
-			return err
+		name := "my-firmware"
+		if len(args) > 0 {
+			name = args[0]
 		}
-		registry := pkg.NewRegistry(regPath)
 
-		sample := &pkg.Manifest{
-			Name:        "example-firmware",
-			Version:     "1.0.0",
-			Description: "Sample firmware package for learning Opius package format",
+		// Create manifest template
+		manifest := pkg.PackageManifest{
+			Name:        name,
+			Description: "Description of " + name,
+			Category:    "custom",
+			Chips:       []string{"esp32"},
+			Boards:      []string{},
+			Homepage:    "https://github.com/your-username/" + name,
 			License:     "MIT",
-			Homepage:    "https://example.com",
-			Repository:  "https://github.com/example/example-firmware",
-			Authors:     []string{"Opius Team"},
-			Chips:       []string{"esp32", "esp32-s3"},
-			Boards:      []string{"esp32-devkit-v1", "esp32-s3-devkit"},
-			CreatedAt:   time.Now(),
-			Files: []pkg.File{
+			Versions: []pkg.PackageVersion{
 				{
-					Path:   "firmware.bin",
-					SHA256: "",
-					Size:   0,
-					Type:   "firmware",
-				},
-				{
-					Path:   "README.md",
-					SHA256: "",
-					Size:   0,
-					Type:   "doc",
+					Version:     "1.0.0",
+					ReleaseDate: "2026-09-11",
+					DownloadURL: "https://github.com/your-username/" + name + "/releases/download/v1.0.0/firmware.bin",
+					SHA256:      "",
+					Size:        0,
 				},
 			},
 		}
 
-		if err := registry.Add(sample); err != nil {
-			return err
+		// Create output directory
+		outputDir := filepath.Join(".", name)
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
-		manifestPath := filepath.Join(regPath, sample.Name+"-"+sample.Version+".toml")
+		// Write manifest.json
+		manifestPath := filepath.Join(outputDir, "manifest.json")
+		data, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal manifest: %w", err)
+		}
 
-		components.PrintSection("Sample Package Created")
-		fmt.Printf("  %-12s %s\n", "Name", style.Value.Render(sample.Name))
-		fmt.Printf("  %-12s %s\n", "Version", style.Value.Render(sample.Version))
+		if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to write manifest: %w", err)
+		}
+
+		components.PrintSection("Package Initialized")
+		fmt.Printf("  %-12s %s\n", "Name", style.Value.Render(name))
 		fmt.Printf("  %-12s %s\n", "Manifest", style.Dim.Render(manifestPath))
 		fmt.Println()
+		fmt.Println("  " + components.BadgeOK() + " Template created!")
+		fmt.Println()
 		fmt.Println(style.Info.Render("  Next steps:"))
-		fmt.Println(style.Dim.Render("    1. Edit the manifest to match your firmware"))
-		fmt.Println(style.Dim.Render("    2. Put your files in the registry directory:"))
-		fmt.Println(style.Dim.Render("       " + regPath))
-		fmt.Println(style.Dim.Render("    3. Update SHA-256 hashes with:"))
-		fmt.Println(style.Dim.Render("       shasum -a 256 <file>"))
-		fmt.Println(style.Dim.Render("    4. Search for it with:"))
-		fmt.Println(style.Dim.Render("       opius pkg search"))
+		fmt.Println(style.Dim.Render("    1. Edit " + manifestPath))
+		fmt.Println(style.Dim.Render("    2. Upload your firmware.bin to GitHub releases"))
+		fmt.Println(style.Dim.Render("    3. Update download_url and sha256 in manifest"))
+		fmt.Println(style.Dim.Render("    4. Submit a PR to https://github.com/am1s3/opius-os-pkg"))
+		fmt.Println()
+
 		return nil
 	},
 }

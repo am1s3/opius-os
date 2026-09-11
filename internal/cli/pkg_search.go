@@ -2,73 +2,80 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/opius-os/opius/internal/pkg"
 	"github.com/opius-os/opius/internal/ui/components"
 	"github.com/opius-os/opius/internal/ui/style"
 )
 
-var pkgSearchQuery string
-
 var pkgSearchCmd = &cobra.Command{
 	Use:   "search [query]",
-	Short: "Search packages in the registry",
+	Short: "Search for firmware packages",
+	Long: `Search the package registry for firmware packages.
+
+Examples:
+  opius pkg search bruce
+  opius pkg search m5stack
+  opius pkg search cyd`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := ""
 		if len(args) > 0 {
-			query = strings.Join(args, " ")
+			query = args[0]
 		}
 
-		regPath, err := pkg.DefaultRegistryPath()
+		reg := newPkgRegistry()
+		if err := reg.Sync(); err != nil {
+			return fmt.Errorf("failed to sync registry: %w", err)
+		}
+
+		results, err := reg.Search(query)
 		if err != nil {
 			return err
 		}
-		registry := pkg.NewRegistry(regPath)
 
-		results, err := registry.Search(query)
-		if err != nil {
-			return err
-		}
-
-		components.PrintSection("Package Search")
 		if query != "" {
-			fmt.Printf("  query: %s\n\n", style.Value.Render(query))
+			components.PrintSection("Search Results for " + style.Value.Render(query))
+		} else {
+			components.PrintSection("All Packages")
 		}
 
 		if len(results) == 0 {
-			fmt.Println("  " + components.BadgeWarn() + " no packages found")
-			fmt.Println(style.Dim.Render("  Add packages to the registry with:"))
-			fmt.Println(style.Dim.Render("    opius pkg init"))
+			fmt.Println("  " + components.BadgeWarn() + " No packages found")
+			if query != "" {
+				fmt.Println(style.Dim.Render("  Try a different search term"))
+			}
 			return nil
 		}
 
-		fmt.Printf("  %-20s %-10s %-40s\n",
+		fmt.Printf("  %-30s %-12s %s\n",
 			style.Header.Render("NAME"),
-			style.Header.Render("VERSION"),
+			style.Header.Render("CHIPS"),
 			style.Header.Render("DESCRIPTION"),
 		)
 
-		for _, m := range results {
-			desc := m.Description
+		for _, p := range results {
+			chips := "-"
+			if len(p.Chips) > 0 {
+				chips = joinStrings(p.Chips)
+			}
+			desc := p.Description
 			if len(desc) > 40 {
 				desc = desc[:37] + "..."
 			}
-			fmt.Printf("  %-20s %-10s %-40s\n",
-				style.Value.Render(m.Name),
-				style.Dim.Render(m.Version),
+
+			fmt.Printf("  %-30s %-12s %s\n",
+				style.Value.Render(p.Name),
+				style.Dim.Render(chips),
 				desc,
 			)
 		}
 
 		fmt.Println()
 		fmt.Printf("  %d package(s) found\n", len(results))
+		fmt.Println(style.Dim.Render("  Get details: opius pkg info <name>"))
+
 		return nil
 	},
-}
-
-func init() {
-	pkgSearchCmd.Flags().StringVarP(&pkgSearchQuery, "query", "q", "", "Search query")
 }

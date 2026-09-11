@@ -2,13 +2,17 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/opius-os/opius/internal/config"
@@ -51,17 +55,25 @@ func (s *Server) handlePackages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	regPath, err := pkg.DefaultRegistryPath()
+	cacheDir, err := pkg.DefaultCacheDir()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
 		return
 	}
 
-	registry := pkg.NewRegistry(regPath)
+	registry := pkg.NewRegistry(pkg.DefaultRegistryURL(), cacheDir)
 	packages, err := registry.List()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
-		return
+		// Try sync
+		if err := registry.Sync(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+			return
+		}
+		packages, err = registry.List()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: packages})
@@ -83,34 +95,64 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	regPath, err := pkg.DefaultRegistryPath()
+	cacheDir, err := pkg.DefaultCacheDir()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
 		return
 	}
 
-	registry := pkg.NewRegistry(regPath)
+	registry := pkg.NewRegistry(pkg.DefaultRegistryURL(), cacheDir)
 	m, err := registry.Find(req.Name)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: err.Error()})
 		return
 	}
 
-	storePath, err := pkg.DefaultStorePath()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+	// Find version
+	var version *pkg.PackageVersion
+	for i := range m.Versions {
+		if m.Versions[i].Version == req.Version {
+			version = &m.Versions[i]
+			break
+		}
+	}
+
+	if version == nil {
+		if len(m.Versions) > 0 {
+			version = &m.Versions[0]
+		} else {
+			writeJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: "no versions available"})
+			return
+		}
+	}
+
+	// Download binary
+	home, _ := os.UserHomeDir()
+	downloadDir := filepath.Join(home, ".opius", "downloads")
+	os.MkdirAll(downloadDir, 0755)
+
+	filename := filepath.Base(version.DownloadURL)
+	if filename == "" || filename == "/" {
+		filename = m.Name + "-" + version.Version + ".bin"
+	}
+	destPath := filepath.Join(downloadDir, filename)
+
+	if err := downloadFile(version.DownloadURL, destPath, version.Size); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "download failed: " + err.Error()})
 		return
 	}
 
-	store := pkg.NewStore(storePath)
-	if err := store.Install(m, regPath); err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
-		return
+	// Verify SHA256
+	if version.SHA256 != "" {
+		if err := verifyFileSHA256(destPath, version.SHA256); err != nil {
+			writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "checksum mismatch: " + err.Error()})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, APIResponse{
 		Success: true,
-		Data:    map[string]string{"message": fmt.Sprintf("package %s@%s installed successfully", m.Name, m.Version)},
+		Data:    map[string]string{"message": fmt.Sprintf("package %s@%s downloaded to %s", m.Name, version.Version, destPath)},
 	})
 }
 
@@ -132,41 +174,50 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	regPath, err := pkg.DefaultRegistryPath()
+	cacheDir, err := pkg.DefaultCacheDir()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
 		return
 	}
 
-	registry := pkg.NewRegistry(regPath)
+	registry := pkg.NewRegistry(pkg.DefaultRegistryURL(), cacheDir)
 	m, err := registry.Find(req.PackageName)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, APIResponse{Success: false, Error: err.Error()})
 		return
 	}
 
-	var firmwareFile *pkg.File
-	for i := range m.Files {
-		if m.Files[i].Type == "firmware" {
-			firmwareFile = &m.Files[i]
-			break
+	// Use latest version
+	if len(m.Versions) == 0 {
+		writeJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "no versions available"})
+		return
+	}
+	version := m.Versions[0]
+
+	// Download if not exists
+	home, _ := os.UserHomeDir()
+	downloadDir := filepath.Join(home, ".opius", "downloads")
+	os.MkdirAll(downloadDir, 0755)
+
+	filename := filepath.Base(version.DownloadURL)
+	if filename == "" || filename == "/" {
+		filename = m.Name + "-" + version.Version + ".bin"
+	}
+	firmwarePath := filepath.Join(downloadDir, filename)
+
+	if _, err := os.Stat(firmwarePath); os.IsNotExist(err) {
+		if err := downloadFile(version.DownloadURL, firmwarePath, version.Size); err != nil {
+			writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "download failed: " + err.Error()})
+			return
+		}
+
+		if version.SHA256 != "" {
+			if err := verifyFileSHA256(firmwarePath, version.SHA256); err != nil {
+				writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "checksum mismatch: " + err.Error()})
+				return
+			}
 		}
 	}
-
-	if firmwareFile == nil {
-		writeJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "no firmware file found"})
-		return
-	}
-
-	storePath, err := pkg.DefaultStorePath()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
-		return
-	}
-
-	store := pkg.NewStore(storePath)
-	installDir := store.PackageDir(m.Name, m.Version)
-	firmwarePath := filepath.Join(installDir, firmwareFile.Path)
 
 	chip := req.Chip
 	if chip == "" && len(m.Chips) > 0 {
@@ -289,7 +340,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, APIResponse{
 		Success: true,
-		Data:    map[string]string{"status": "ok", "version": "1.0.0"},
+		Data:    map[string]string{"status": "ok", "version": "1.2.0"},
 	})
 }
 
@@ -559,16 +610,15 @@ func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storePath, err := pkg.DefaultStorePath()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
-		return
-	}
-
-	store := pkg.NewStore(storePath)
-	if err := store.Remove(req.Name, req.Version); err != nil {
-		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
-		return
+	home, _ := os.UserHomeDir()
+	downloadDir := filepath.Join(home, ".opius", "downloads")
+	
+	// Remove all files matching package name
+	entries, _ := os.ReadDir(downloadDir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), req.Name) {
+			os.Remove(filepath.Join(downloadDir, e.Name()))
+		}
 	}
 
 	writeJSON(w, http.StatusOK, APIResponse{
@@ -616,4 +666,269 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		Data:    map[string]string{"path": destPath, "filename": handler.Filename},
 	})
+}
+
+func (s *Server) handleScriptCompile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "method not allowed"})
+		return
+	}
+
+	var req struct {
+		Code  string `json:"code"`
+		Board string `json:"board"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "invalid request"})
+		return
+	}
+
+	if _, err := exec.LookPath("arduino-cli"); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "arduino-cli not installed",
+		})
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "opius-sketch-*")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sketchPath := filepath.Join(tmpDir, "sketch.ino")
+	if err := os.WriteFile(sketchPath, []byte(req.Code), 0644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	buildDir := filepath.Join(tmpDir, "build")
+	os.MkdirAll(buildDir, 0755)
+
+	board := req.Board
+	if board == "" {
+		board = "esp32:esp32:esp32"
+	}
+
+	cmd := exec.Command("arduino-cli", "compile",
+		"--fqbn", board,
+		"--build-path", buildDir,
+		tmpDir,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Compilation failed",
+			Data:    map[string]string{"output": string(output)},
+		})
+		return
+	}
+
+	var binPath string
+	filepath.Walk(buildDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && (filepath.Ext(path) == ".bin" || filepath.Ext(path) == ".hex") {
+			binPath = path
+			return filepath.SkipDir
+		}
+		return nil
+	})
+
+	if binPath == "" {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: "compiled binary not found"})
+		return
+	}
+
+	binData, err := os.ReadFile(binPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	downloadDir := filepath.Join(home, ".opius", "downloads")
+	os.MkdirAll(downloadDir, 0755)
+
+	destPath := filepath.Join(downloadDir, "sketch-"+time.Now().Format("20060102-150405")+".bin")
+	if err := os.WriteFile(destPath, binData, 0644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"message": "Compilation successful",
+			"path":    destPath,
+			"size":    len(binData),
+		},
+	})
+}
+
+func (s *Server) handleScriptFlash(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Error: "method not allowed"})
+		return
+	}
+
+	var req struct {
+		Code  string `json:"code"`
+		Board string `json:"board"`
+		Port  string `json:"port"`
+		Chip  string `json:"chip"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "invalid request"})
+		return
+	}
+
+	if _, err := exec.LookPath("arduino-cli"); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "arduino-cli not installed",
+		})
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "opius-sketch-*")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sketchPath := filepath.Join(tmpDir, "sketch.ino")
+	if err := os.WriteFile(sketchPath, []byte(req.Code), 0644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	buildDir := filepath.Join(tmpDir, "build")
+	os.MkdirAll(buildDir, 0755)
+
+	board := req.Board
+	if board == "" {
+		board = "esp32:esp32:esp32"
+	}
+
+	compileCmd := exec.Command("arduino-cli", "compile",
+		"--fqbn", board,
+		"--build-path", buildDir,
+		tmpDir,
+	)
+
+	if output, err := compileCmd.CombinedOutput(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Compilation failed",
+			Data:    map[string]string{"output": string(output)},
+		})
+		return
+	}
+
+	port := req.Port
+	if port == "" {
+		writeJSON(w, http.StatusBadRequest, APIResponse{Success: false, Error: "port is required"})
+		return
+	}
+
+	uploadCmd := exec.Command("arduino-cli", "upload",
+		"--fqbn", board,
+		"--port", port,
+		"--input-dir", buildDir,
+	)
+
+	if output, err := uploadCmd.CombinedOutput(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{
+			Success: false,
+			Error:   "Upload failed",
+			Data:    map[string]string{"output": string(output)},
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Data:    map[string]string{"message": "Sketch compiled and flashed successfully"},
+	})
+}
+
+func (s *Server) handleFlashProgress(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	port := r.URL.Query().Get("port")
+	if port == "" {
+		fmt.Fprintf(w, "event: error\ndata: port required\n\n")
+		flusher.Flush()
+		return
+	}
+
+	for i := 0; i <= 100; i += 10 {
+		fmt.Fprintf(w, "event: progress\ndata: %d\n\n", i)
+		flusher.Flush()
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Fprintf(w, "event: complete\ndata: done\n\n")
+	flusher.Flush()
+}
+
+func downloadFile(url, destPath string, expectedSize int64) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func verifyFileSHA256(path, expected string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("expected %s, got %s", expected, actual)
+	}
+
+	return nil
 }

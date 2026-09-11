@@ -223,6 +223,7 @@ func init() {
 	deviceCmd.AddCommand(deviceDoctorCmd)
 	deviceCmd.AddCommand(deviceFlashCmd)
 	deviceCmd.AddCommand(deviceFlashCustomCmd)
+	deviceCmd.AddCommand(deviceFlashScriptCmd)
 	deviceCmd.AddCommand(deviceMonitorCmd)
 	deviceCmd.AddCommand(deviceEraseCmd)
 	deviceCmd.AddCommand(deviceResetCmd)

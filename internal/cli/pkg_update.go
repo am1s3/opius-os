@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/opius-os/opius/internal/config"
 	"github.com/opius-os/opius/internal/pkg"
 	"github.com/opius-os/opius/internal/ui/components"
 	"github.com/opius-os/opius/internal/ui/style"
@@ -26,43 +25,30 @@ Examples:
   opius pkg update
   opius pkg sync`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-
-		regDir, err := cfg.RegistryDir()
+		cacheDir, err := pkg.DefaultCacheDir()
 		if err != nil {
 			return err
 		}
 
-		remote := pkg.NewRemoteRegistry(cfg.RegistryURL, regDir)
+		reg := pkg.NewRegistry(pkg.DefaultRegistryURL(), cacheDir)
 
 		components.PrintSection("Registry Update")
-		fmt.Printf("  %-12s %s\n", "Source", style.Value.Render(cfg.RegistryURL))
-		fmt.Printf("  %-12s %s\n", "Local", style.Dim.Render(regDir))
+		fmt.Printf("  %-12s %s\n", "Source", style.Value.Render(pkg.DefaultRegistryURL()))
+		fmt.Printf("  %-12s %s\n", "Local", style.Dim.Render(cacheDir))
 		fmt.Println()
 
-		progress := make(chan string, 10)
-		errCh := make(chan error, 1)
+		fmt.Print("  Syncing... ")
 
-		go func() {
-			errCh <- remote.Sync(progress)
-		}()
-
-		for msg := range progress {
-			fmt.Println("  " + style.Info.Render("→") + " " + msg)
-		}
-
-		if err := <-errCh; err != nil {
-			fmt.Println()
+		if err := reg.Sync(); err != nil {
+			fmt.Println(components.BadgeErr())
 			fmt.Println("  " + components.BadgeErr() + " " + err.Error())
 			return err
 		}
 
+		fmt.Println(components.BadgeOK())
+
 		// Count packages
-		registry := pkg.NewRegistry(regDir)
-		packages, _ := registry.List()
+		packages, _ := reg.List()
 
 		fmt.Println()
 		fmt.Println("  " + components.BadgeOK() + " registry updated successfully")
@@ -70,6 +56,7 @@ Examples:
 		fmt.Println()
 		fmt.Println(style.Dim.Render("  Search packages with:"))
 		fmt.Println(style.Dim.Render("    opius pkg search"))
+		fmt.Println(style.Dim.Render("    opius pkg list"))
 		return nil
 	},
 }
