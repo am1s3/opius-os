@@ -2,7 +2,7 @@
 
 Terminal-first embedded workspace for microcontrollers.
 
-Opius OS — это кроссплатформенный инструмент для работы с микроконтроллерами: прошивка, мониторинг, управление пакетами прошивок, и полноценный веб-интерфейс в стиле десктопной ОС.
+Opius OS — This is a cross-platform tool for working with microcontrollers: firmware, monitoring, firmware package management, and a full-fledged web interface in the style of a desktop OS.
 
 ![Opius OS](https://img.shields.io/badge/version-1.0.0-blue)
 ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8)
@@ -12,13 +12,13 @@ Opius OS — это кроссплатформенный инструмент д
 
 ## Features
 
-- 🔌 **Device Management** — автоматическое определение подключённых устройств (ESP32, ESP8266, Arduino, RP2040, STM32)
-- ⚡ **Flash Firmware** — прошивка из пакетов или кастомных `.bin` файлов с указанием адресов памяти
-- 📦 **Package Manager** — реестр прошивок с проверкой контрольных сумм
-- 🖥️ **Serial Monitor** — цветной монитор с отправкой команд в устройство
-- 🌐 **Web UI** — полноценный десктоп в браузере с терминалом, файловым менеджером и системным монитором
-- 🎨 **Dark Theme** — профессиональный тёмный интерфейс
-- 🔄 **Auto-sync** — синхронизация реестра прошивок из удалённого источника
+- 🔌 **Device Management** — automatic detection of connected devices (ESP32, ESP8266, Arduino, RP2040, STM32)
+- ⚡ **Flash Firmware** — firmware from packages or custom `.bin` files with memory addresses
+- 📦 **Package Manager** — firmware registry with checksum verification
+- 🖥️ **Serial Monitor** — color monitor with sending commands to the device
+- 🌐 **Web UI** — A full-fledged desktop in a browser with a terminal, file manager, and system monitor
+- 🎨 **Dark Theme** — professional dark interface
+- 🔄 **Auto-sync** — synchronizing the firmware registry from a remote source
 
 ---
 
