@@ -4,7 +4,7 @@ Terminal-first embedded workspace for microcontrollers.
 
 Opius OS — This is a cross-platform tool for working with microcontrollers: firmware, monitoring, firmware package management, and a full-fledged web interface in the style of a desktop OS.
 
-![Opius OS](https://img.shields.io/badge/version-1.0.0-blue)
+![Opius OS](https://img.shields.io/badge/version-1.2.0-blue)
 ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
